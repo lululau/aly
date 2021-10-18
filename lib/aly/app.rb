@@ -18,6 +18,34 @@ module Aly
       send(options[:command], *options[:args], **options[:options])
     end
 
+    def ecs(*args, **options)
+      raw_out = exec('ecs', 'DescribeInstances', '--pager')
+      selected = raw_out['Instances']['Instance'].each do |item|
+        item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }.join(', ')
+        item['PublicIP'] = item['EipAddress']['IpAddress'] || ''
+      end
+
+      if query = args.first
+        selected = selected.select do |item|
+          item.values_at('InstanceId', 'InstanceName', 'PrivateIP', 'PublicIP').compact.any? { |e| e.include?(query) }
+        end
+      end
+
+      if options['detail']
+        puts JSON.pretty_generate(selected)
+      else
+        selected = selected.map do |row|
+          {
+            Id: row['InstanceId'],
+            Name: row['InstanceName'],
+            PrivateIP: row['PrivateIP'],
+            PublicIP: row['PublicIP']
+          }
+        end
+        puts selected.table.to_s
+      end
+    end
+
     def eip(*args, **options)
     end
 

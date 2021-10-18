@@ -5,6 +5,11 @@ module Aly
     class_option :profile, type: :string, optional: true, aliases: ['-p'], desc: 'select profile'
     class_option :detail, type: :boolean, optional: true, default: false, aliases: ['-d'], desc: 'show detail infomation in JSON format'
 
+    desc 'ecs', 'get ECS information'
+    def ecs(query = nil)
+      App.new.start(options: options, command: :ecs, args: [query])
+    end
+
     desc 'eip', 'get EIP information'
     def eip(query = nil)
       App.new.start(options: options, command: :eip, args: [query])
