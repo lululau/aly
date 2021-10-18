@@ -3,6 +3,7 @@ require 'terminal-table'
 
 class Array
   def table
+    return if size.zero?
     header = first.keys
     Terminal::Table.new { |t|
       t << header
@@ -42,11 +43,45 @@ module Aly
             PublicIP: row['PublicIP']
           }
         end
-        puts selected.table.to_s
+        puts selected.table&.to_s
       end
     end
 
     def eip(*args, **options)
+      raw_out = exec('vpc', 'DescribeEipAddresses', '--PageSize=100')
+      selected = raw_out['EipAddresses']['EipAddress']
+
+      if query = args.first
+        selected = selected.select do |item|
+          item.values_at('AllocationId', 'InstanceId', 'InstanceType', 'IpAddress').compact.any? { |e| e.include?(query) }
+        end
+      end
+
+      if options['detail']
+        puts JSON.pretty_generate(selected)
+      else
+        net_intefraces = exec('ecs', 'DescribeNetworkInterfaces', '--pager')['NetworkInterfaceSets']['NetworkInterfaceSet'].each_with_object({}) do |item, result|
+          result[item['NetworkInterfaceId']] = item
+        end
+        selected = selected.map do |row|
+          result = {
+            Id: row['AllocationId'],
+            InstanceId: row['InstanceId'],
+            InstanceType: row['InstanceType'],
+            IP: row['IpAddress'],
+            EcsId: '',
+            PrivateIP: ''
+          }
+
+          if row['InstanceType'] == 'NetworkInterface' && interface = net_intefraces[row['InstanceId']]
+            result[:EcsId] = interface['InstanceId']
+            result[:PrivateIP] = interface['PrivateIpAddress']
+          end
+
+          result
+        end
+        puts selected.table&.to_s
+      end
     end
 
     def slb(*args, **options)
@@ -95,7 +130,7 @@ module Aly
             Listeners: listeners
           }
         end
-        puts selected.table.to_s
+        puts selected.table&.to_s
       end
     end
 
