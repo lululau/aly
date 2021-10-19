@@ -24,6 +24,7 @@ module Aly
       selected = raw_out['Instances']['Instance'].each do |item|
         item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }.join(', ')
         item['PublicIP'] = item['EipAddress']['IpAddress'] || ''
+        item['PublicIP'] = item['PublicIpAddress']['IpAddress'].join(', ') if item['PublicIP'] == ''
       end
 
       if query = args.first
@@ -108,6 +109,11 @@ module Aly
         selected.each do |row|
           described_load_balancer_attributes = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{row['LoadBalancerId']}")
           row['BackendServers'] = described_load_balancer_attributes['BackendServers']['BackendServer']
+
+          row['Listeners'].select { |e| e['VServerGroupId'] }.each do |listener|
+            vserver_group = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{listener['VServerGroupId']}")
+            listener['VServerGroup'] = vserver_group
+          end
         end
 
         puts JSON.pretty_generate(selected)
@@ -118,8 +124,10 @@ module Aly
             backend_port = listener['BackendServerPort']
             if backend_port
               "#{listener_port}:#{backend_port}"
-            else forward_port = listener.dig('HTTPListenerConfig', 'ForwardPort')
+            elsif forward_port = listener.dig('HTTPListenerConfig', 'ForwardPort')
               "#{listener_port}->#{forward_port}"
+            elsif vserver_group_id = listener['VServerGroupId']
+              "#{listener_port}->#{vserver_group_id}"
             end
           end.compact.join(', ')
 
