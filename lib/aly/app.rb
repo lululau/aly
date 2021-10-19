@@ -27,9 +27,9 @@ module Aly
         item['PublicIP'] = item['PublicIpAddress']['IpAddress'].join(', ') if item['PublicIP'] == ''
       end
 
-      if query = args.first
+      if query = args.first&.split(',')
         selected = selected.select do |item|
-          item.values_at('InstanceId', 'InstanceName', 'PrivateIP', 'PublicIP').compact.any? { |e| e.include?(query) }
+          item.values_at('InstanceId', 'InstanceName', 'PrivateIP', 'PublicIP').compact.any? { |e| query.any? { |q| e.include?(q) } }
         end
       end
 
@@ -52,9 +52,9 @@ module Aly
       raw_out = exec('vpc', 'DescribeEipAddresses', '--PageSize=100')
       selected = raw_out['EipAddresses']['EipAddress']
 
-      if query = args.first
+      if query = args.first&.split(',')
         selected = selected.select do |item|
-          item.values_at('AllocationId', 'InstanceId', 'InstanceType', 'IpAddress').compact.any? { |e| e.include?(query) }
+          item.values_at('AllocationId', 'InstanceId', 'InstanceType', 'IpAddress').compact.any? { |e| query.any? { |q| e.include?(q) } }
         end
       end
 
@@ -99,9 +99,9 @@ module Aly
         lb['Listeners'] = listeners[lb['LoadBalancerId']] || []
       end
 
-      if query = args.first
+      if query = args.first&.split(',')
         selected = selected.select do |lb|
-          lb.values_at('LoadBalancerId', 'LoadBalancerName', 'Address').compact.any? { |e| e.include?(query) }
+          lb.values_at('LoadBalancerId', 'LoadBalancerName', 'Address').compact.any? { |e| query.any? { |q| e.include?(q) } }
         end
       end
 
