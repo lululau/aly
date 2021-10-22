@@ -41,7 +41,9 @@ module Aly
             Id: row['InstanceId'],
             Name: row['InstanceName'],
             PrivateIP: row['PrivateIP'],
-            PublicIP: row['PublicIP']
+            PublicIP: row['PublicIP'],
+            CPU: row['Cpu'],
+            RAM: "#{row['Memory'] / 1024.0} GB"
           }
         end
         puts selected.table&.to_s
