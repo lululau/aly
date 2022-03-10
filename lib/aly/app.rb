@@ -22,11 +22,11 @@ module Aly
     end
 
     def ecs(*args, **options)
-      raw_out = exec('ecs', 'DescribeInstances', '--pager')
+      raw_out = exec('ecs', 'DescribeInstances', '--pager', **options)
       selected = raw_out['Instances']['Instance'].each do |item|
-        item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }.join(', ')
+        item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }.join(',')
         item['PublicIP'] = item['EipAddress']['IpAddress'] || ''
-        item['PublicIP'] = item['PublicIpAddress']['IpAddress'].join(', ') if item['PublicIP'] == ''
+        item['PublicIP'] = item['PublicIpAddress']['IpAddress'].join(',') if item['PublicIP'] == ''
       end
 
       if query = args.first&.split(',')
@@ -54,7 +54,7 @@ module Aly
 
     def eip(*args, **options)
       puts 'EIPs:'
-      raw_out = exec('vpc', 'DescribeEipAddresses', '--PageSize=100')
+      raw_out = exec('vpc', 'DescribeEipAddresses', '--PageSize=100', **options)
       selected = raw_out['EipAddresses']['EipAddress']
 
       if query = args.first&.split(',')
@@ -66,7 +66,7 @@ module Aly
       if options['detail']
         puts JSON.pretty_generate(selected)
       else
-        net_intefraces = exec('ecs', 'DescribeNetworkInterfaces', '--pager')['NetworkInterfaceSets']['NetworkInterfaceSet'].each_with_object({}) do |item, result|
+        net_intefraces = exec('ecs', 'DescribeNetworkInterfaces', '--pager', **options)['NetworkInterfaceSets']['NetworkInterfaceSet'].each_with_object({}) do |item, result|
           result[item['NetworkInterfaceId']] = item
         end
         selected = selected.map do |row|
@@ -91,10 +91,10 @@ module Aly
     end
 
     def slb(*args, **options)
-      raw_out = exec('slb', 'DescribeLoadBalancers', '--pager')
+      raw_out = exec('slb', 'DescribeLoadBalancers', '--pager', **options)
       selected = raw_out['LoadBalancers']['LoadBalancer']
 
-      listeners = exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners')['Listeners'].each_with_object({}) do |listener, result|
+      listeners = exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners'].each_with_object({}) do |listener, result|
         instance_id = listener['LoadBalancerId']
         result[instance_id] ||= []
         result[instance_id] << listener
@@ -112,11 +112,11 @@ module Aly
 
       if options['detail']
         selected.each do |row|
-          described_load_balancer_attributes = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{row['LoadBalancerId']}")
+          described_load_balancer_attributes = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{row['LoadBalancerId']}", **options)
           row['BackendServers'] = described_load_balancer_attributes['BackendServers']['BackendServer']
 
           row['Listeners'].select { |e| e['VServerGroupId'] }.each do |listener|
-            vserver_group = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{listener['VServerGroupId']}")
+            vserver_group = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{listener['VServerGroupId']}", **options)
             listener['VServerGroup'] = vserver_group
           end
         end
@@ -155,27 +155,32 @@ module Aly
       @ecs.any? { |item| item['AllIPs'].include?(host) }
     end
 
-    def show_slb(host)
-      @listeners ||= exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners')['Listeners']
+    def show_slb(host, **options)
+      @listeners ||= exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners']
       lb = @slb.find { |e| e['Address'] == host }
       listeners = @listeners.select { |e| e['LoadBalancerId'] == lb['LoadBalancerId'] }
-      background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}")['BackendServers']['BackendServer']
+      background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)['BackendServers']['BackendServer']
 
       puts 'LoadBalancers:'
       puts([{
         Id: lb['LoadBalancerId'],
         Name: lb['LoadBalancerName'],
         Address: lb['Address'],
-        Listeners: listeners.size,
-        BackendServers: background_servers.map { |e| e['ServerId'] }.join(', ')
+        Listeners: listeners.size
       }].table.to_s)
       puts
+
+      if background_servers && background_servers.size > 0
+        puts 'Default Backend Servers:'
+        puts background_servers.table.to_s
+        puts
+      end
 
       listeners_info = listeners.map do |listener|
         {
           Port: listener['ListenerPort'],
           Protocol: listener['ListenerProtocol'],
-          Status: listener['ListenerStatus'],
+          Status: listener['Status'],
           BackendServerPort: listener['BackendServerPort'],
           ForwardPort: listener.dig('HTTPListenerConfig', 'ForwardPort'),
           VServerGroup: listener['VServerGroupId']
@@ -188,11 +193,11 @@ module Aly
 
       listeners_info.each do |listener|
         if listener[:VServerGroup]
-          vserver_group = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{listener[:VServerGroup]}")["BackendServers"]["BackendServer"]
+          vserver_group = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{listener[:VServerGroup]}", **options)["BackendServers"]["BackendServer"]
           puts "VServerGroup #{listener[:VServerGroup]}:"
           puts(vserver_group.map { |e|
             {
-              EcInstanceId: e['ServerId'],
+              EcsInstanceId: e['ServerId'],
               Port: e['Port'],
               Weight: e['Weight'],
               Type: e['Type']
@@ -205,7 +210,7 @@ module Aly
       ecs_ids = background_servers.map { |e| e['ServerId'] }
       ecs_ids += listeners_info.flat_map { |e|
         if e[:VServerGroup]
-          exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{e[:VServerGroup]}")["BackendServers"]["BackendServer"].map { |e| e['ServerId'] }
+          exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{e[:VServerGroup]}", **options)["BackendServers"]["BackendServer"].map { |e| e['ServerId'] }
         else
           []
         end
@@ -220,8 +225,8 @@ module Aly
         {
           Id: row['InstanceId'],
           Name: row['InstanceName'],
-          PrivateIP: row['PrivateIP'].join(', '),
-          PublicIP: row['PublicIP'].join(', '),
+          PrivateIP: row['PrivateIP'].join(','),
+          PublicIP: row['PublicIP'].join(','),
           CPU: row['Cpu'],
           RAM: "#{row['Memory'] / 1024.0} GB"
         }
@@ -234,8 +239,8 @@ module Aly
         {
           Id: row['InstanceId'],
           Name: row['InstanceName'],
-          PrivateIP: row['PrivateIP'].join(', '),
-          PublicIP: row['PublicIP'].join(', '),
+          PrivateIP: row['PrivateIP'].join(','),
+          PublicIP: row['PublicIP'].join(','),
           CPU: row['Cpu'],
           RAM: "#{row['Memory'] / 1024.0} GB"
         }
@@ -249,11 +254,11 @@ module Aly
     end
 
     def show(*args, **options)
-      @slb ||= exec('slb', 'DescribeLoadBalancers', '--pager')['LoadBalancers']['LoadBalancer']
+      @slb ||= exec('slb', 'DescribeLoadBalancers', '--pager', **options)['LoadBalancers']['LoadBalancer']
 
-      @eip ||= exec('vpc', 'DescribeEipAddresses', '--PageSize=100')['EipAddresses']['EipAddress']
+      @eip ||= exec('vpc', 'DescribeEipAddresses', '--PageSize=100', **options)['EipAddresses']['EipAddress']
       unless @ecs
-        @ecs = exec('ecs', 'DescribeInstances', '--pager')['Instances']['Instance']
+        @ecs = exec('ecs', 'DescribeInstances', '--pager', **options)['Instances']['Instance']
         @ecs.each do |item|
           item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }
           item['PublicIP'] = []
@@ -273,7 +278,7 @@ module Aly
       puts
 
       if slb_contains_host?(host)
-        show_slb(host)
+        show_slb(host, **options)
       elsif ecs_contains_host?(host)
         show_ecs(host)
       elsif eip_contains_host?(host)
@@ -283,8 +288,10 @@ module Aly
       end
     end
 
-    def exec(command, sub_command, *args)
-      JSON.parse(`aliyun #{command} #{sub_command} #{args.join(' ')}`)
+    def exec(command, sub_command, *args, **options)
+      command = "aliyun #{command} #{sub_command} #{args.join(' ')}"
+      command += " -p #{options['profile']}" if options['profile']
+      JSON.parse(`#{command}`)
     end
   end
 end
