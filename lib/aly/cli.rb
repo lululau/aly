@@ -20,6 +20,11 @@ module Aly
       App.new.start(options: options, command: :slb, args: [query])
     end
 
+    desc 'show', 'show resource information of host'
+    def show(host = nil)
+      App.new.start(options: options, command: :show, args: [host])
+    end
+
     class << self
       def main(args)
         start(args)

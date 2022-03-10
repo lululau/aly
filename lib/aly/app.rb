@@ -1,5 +1,7 @@
 require 'json'
 require 'terminal-table'
+require 'socket'
+
 
 class Array
   def table
@@ -51,6 +53,7 @@ module Aly
     end
 
     def eip(*args, **options)
+      puts 'EIPs:'
       raw_out = exec('vpc', 'DescribeEipAddresses', '--PageSize=100')
       selected = raw_out['EipAddresses']['EipAddress']
 
@@ -141,6 +144,142 @@ module Aly
           }
         end
         puts selected.table&.to_s
+      end
+    end
+
+    def slb_contains_host?(host)
+      @slb.any? { |lb| lb['Address'] == host }
+    end
+
+    def ecs_contains_host?(host)
+      @ecs.any? { |item| item['AllIPs'].include?(host) }
+    end
+
+    def show_slb(host)
+      @listeners ||= exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners')['Listeners']
+      lb = @slb.find { |e| e['Address'] == host }
+      listeners = @listeners.select { |e| e['LoadBalancerId'] == lb['LoadBalancerId'] }
+      background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}")['BackendServers']['BackendServer']
+
+      puts 'LoadBalancers:'
+      puts([{
+        Id: lb['LoadBalancerId'],
+        Name: lb['LoadBalancerName'],
+        Address: lb['Address'],
+        Listeners: listeners.size,
+        BackendServers: background_servers.map { |e| e['ServerId'] }.join(', ')
+      }].table.to_s)
+      puts
+
+      listeners_info = listeners.map do |listener|
+        {
+          Port: listener['ListenerPort'],
+          Protocol: listener['ListenerProtocol'],
+          Status: listener['ListenerStatus'],
+          BackendServerPort: listener['BackendServerPort'],
+          ForwardPort: listener.dig('HTTPListenerConfig', 'ForwardPort'),
+          VServerGroup: listener['VServerGroupId']
+        }
+      end
+
+      puts 'Configured Listeners:'
+      puts listeners_info.table.to_s
+      puts
+
+      listeners_info.each do |listener|
+        if listener[:VServerGroup]
+          vserver_group = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{listener[:VServerGroup]}")["BackendServers"]["BackendServer"]
+          puts "VServerGroup #{listener[:VServerGroup]}:"
+          puts(vserver_group.map { |e|
+            {
+              EcInstanceId: e['ServerId'],
+              Port: e['Port'],
+              Weight: e['Weight'],
+              Type: e['Type']
+            }
+          }.table.to_s)
+          puts
+        end
+      end
+
+      ecs_ids = background_servers.map { |e| e['ServerId'] }
+      ecs_ids += listeners_info.flat_map { |e|
+        if e[:VServerGroup]
+          exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{e[:VServerGroup]}")["BackendServers"]["BackendServer"].map { |e| e['ServerId'] }
+        else
+          []
+        end
+      }
+      ecs_ids.uniq!
+
+      ecss = @ecs.select { |e| ecs_ids.include?(e['InstanceId']) }
+
+      puts "Referenced ECS Instances:"
+
+      puts ecss.map { |row|
+        {
+          Id: row['InstanceId'],
+          Name: row['InstanceName'],
+          PrivateIP: row['PrivateIP'].join(', '),
+          PublicIP: row['PublicIP'].join(', '),
+          CPU: row['Cpu'],
+          RAM: "#{row['Memory'] / 1024.0} GB"
+        }
+      }.table.to_s
+
+    end
+
+    def show_ecs(host)
+      selected = @ecs.select { |e| e['AllIPs'].include?(host) }.map do |row|
+        {
+          Id: row['InstanceId'],
+          Name: row['InstanceName'],
+          PrivateIP: row['PrivateIP'].join(', '),
+          PublicIP: row['PublicIP'].join(', '),
+          CPU: row['Cpu'],
+          RAM: "#{row['Memory'] / 1024.0} GB"
+        }
+      end
+      puts 'ECS Instances:'
+      puts selected.table&.to_s
+    end
+
+    def eip_contains_host?(host)
+      @eip.any? { |eip| eip['IpAddress'] == host }
+    end
+
+    def show(*args, **options)
+      @slb ||= exec('slb', 'DescribeLoadBalancers', '--pager')['LoadBalancers']['LoadBalancer']
+
+      @eip ||= exec('vpc', 'DescribeEipAddresses', '--PageSize=100')['EipAddresses']['EipAddress']
+      unless @ecs
+        @ecs = exec('ecs', 'DescribeInstances', '--pager')['Instances']['Instance']
+        @ecs.each do |item|
+          item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }
+          item['PublicIP'] = []
+          if ip = item['EipAddress']['IpAddress']
+            item['PublicIP'] << ip
+          end
+          if ips = item['PublicIpAddress']['IpAddress']
+            item['PublicIP'] += ips
+          end
+          item['AllIPs'] = item['PrivateIP'] + item['PublicIP']
+        end
+      end
+
+      host = IPSocket::getaddress(args.first)
+
+      puts "Host: #{args.first} resolves to #{host}" if host != args.first
+      puts
+
+      if slb_contains_host?(host)
+        show_slb(host)
+      elsif ecs_contains_host?(host)
+        show_ecs(host)
+      elsif eip_contains_host?(host)
+        eip(host)
+      else
+        puts "Not found: #{host}"
       end
     end
 
