@@ -63,6 +63,7 @@ module Aly
         end
       end
 
+
       if options['detail']
         puts JSON.pretty_generate(selected)
       else
@@ -93,6 +94,10 @@ module Aly
     def slb(*args, **options)
       raw_out = exec('slb', 'DescribeLoadBalancers', '--pager', **options)
       selected = raw_out['LoadBalancers']['LoadBalancer'] || []
+
+      eips = exec('vpc', 'DescribeEipAddresses', "--PageSize=#{selected.size}", **options)['EipAddresses']['EipAddress'].each_with_object({}) do |item, result|
+        result[item['InstanceId']] = item['IpAddress']
+      end
 
       listeners = (exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners'] || []).each_with_object({}) do |listener, result|
         instance_id = listener['LoadBalancerId']
@@ -140,6 +145,7 @@ module Aly
             Id: row['LoadBalancerId'],
             Name: row['LoadBalancerName'],
             Address: row['Address'],
+            Eip: eips[row['LoadBalancerId']] || '',
             Listeners: listeners
           }
         end
@@ -148,7 +154,7 @@ module Aly
     end
 
     def slb_contains_host?(host)
-      @slb.any? { |lb| lb['Address'] == host }
+      @slb.any? { |lb| lb['Address'] == host || lb['Eip'] == host }
     end
 
     def ecs_contains_host?(host)
@@ -157,7 +163,7 @@ module Aly
 
     def show_slb(host, **options)
       @listeners ||= exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners'] || []
-      lb = @slb.find { |e| e['Address'] == host }
+      lb = @slb.find { |e| e['Address'] == host || e['Eip'] == host }
       listeners = @listeners.select { |e| e['LoadBalancerId'] == lb['LoadBalancerId'] }
       background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)['BackendServers']['BackendServer']
 
@@ -166,6 +172,7 @@ module Aly
         Id: lb['LoadBalancerId'],
         Name: lb['LoadBalancerName'],
         Address: lb['Address'],
+        Eip: lb['Eip'],
         Listeners: listeners.size
       }].table.to_s)
       puts
@@ -257,6 +264,12 @@ module Aly
       @slb ||= exec('slb', 'DescribeLoadBalancers', '--pager', **options)['LoadBalancers']['LoadBalancer'] || []
 
       @eip ||= exec('vpc', 'DescribeEipAddresses', '--PageSize=100', **options)['EipAddresses']['EipAddress'] || []
+
+      eip_map = @eip.each_with_object({}) { |eip, h| h[eip['InstanceId']] = eip['IpAddress'] }
+      @slb.each do |slb|
+        slb['Eip'] = eip_map[slb['LoadBalancerId']]
+      end
+
       unless @ecs
         @ecs = exec('ecs', 'DescribeInstances', '--pager', **options)['Instances']['Instance'] || []
         @ecs.each do |item|
@@ -282,7 +295,7 @@ module Aly
       elsif ecs_contains_host?(host)
         show_ecs(host)
       elsif eip_contains_host?(host)
-        eip(host)
+        eip(host, **options)
       else
         puts "Not found: #{host}"
       end
