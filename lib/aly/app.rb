@@ -23,7 +23,7 @@ module Aly
 
     def ecs(*args, **options)
       raw_out = exec('ecs', 'DescribeInstances', '--pager', **options)
-      selected = raw_out['Instances']['Instance'].each do |item|
+      selected = (raw_out['Instances']['Instance'] || []).each do |item|
         item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }.join(',')
         item['PublicIP'] = item['EipAddress']['IpAddress'] || ''
         item['PublicIP'] = item['PublicIpAddress']['IpAddress'].join(',') if item['PublicIP'] == ''
@@ -92,9 +92,9 @@ module Aly
 
     def slb(*args, **options)
       raw_out = exec('slb', 'DescribeLoadBalancers', '--pager', **options)
-      selected = raw_out['LoadBalancers']['LoadBalancer']
+      selected = raw_out['LoadBalancers']['LoadBalancer'] || []
 
-      listeners = exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners'].each_with_object({}) do |listener, result|
+      listeners = (exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners'] || []).each_with_object({}) do |listener, result|
         instance_id = listener['LoadBalancerId']
         result[instance_id] ||= []
         result[instance_id] << listener
@@ -156,7 +156,7 @@ module Aly
     end
 
     def show_slb(host, **options)
-      @listeners ||= exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners']
+      @listeners ||= exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners'] || []
       lb = @slb.find { |e| e['Address'] == host }
       listeners = @listeners.select { |e| e['LoadBalancerId'] == lb['LoadBalancerId'] }
       background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)['BackendServers']['BackendServer']
@@ -254,11 +254,11 @@ module Aly
     end
 
     def show(*args, **options)
-      @slb ||= exec('slb', 'DescribeLoadBalancers', '--pager', **options)['LoadBalancers']['LoadBalancer']
+      @slb ||= exec('slb', 'DescribeLoadBalancers', '--pager', **options)['LoadBalancers']['LoadBalancer'] || []
 
-      @eip ||= exec('vpc', 'DescribeEipAddresses', '--PageSize=100', **options)['EipAddresses']['EipAddress']
+      @eip ||= exec('vpc', 'DescribeEipAddresses', '--PageSize=100', **options)['EipAddresses']['EipAddress'] || []
       unless @ecs
-        @ecs = exec('ecs', 'DescribeInstances', '--pager', **options)['Instances']['Instance']
+        @ecs = exec('ecs', 'DescribeInstances', '--pager', **options)['Instances']['Instance'] || []
         @ecs.each do |item|
           item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }
           item['PublicIP'] = []
