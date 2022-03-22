@@ -405,25 +405,22 @@ module Aly
       puts listener_rules.table.to_s.gsub(/^/, '    ')
       puts
 
-      if options['acl']
-        acl_ids = listeners.flat_map { |listener| listener['AclIds'] || [] }.uniq
-        unless acl_ids.empty?
-          alc_entries = acl_ids.flat_map do |acl_id|
-            attr = exec('slb', 'DescribeAccessControlListAttribute', "--AclId=#{acl_id}", **options)
-            (attr.dig('AclEntrys', 'AclEntry') || []).each_with_index.map do |e, idx|
-              {
-                AclId: (idx.zero? ? attr['AclId'] : ''),
-                AclName: (idx.zero? ? attr['AclName'] : ''),
-                AclEntryIP: e['AclEntryIP'],
-                AclEntryComment: e['AclEntryComment']
-              }
-            end + [nil]
-          end
-          puts '    Access Control Lists:'
-          puts alc_entries[0..-2].table.to_s.gsub(/^/, '    ')
-          puts
+      acl_ids = listeners.flat_map { |listener| listener['AclIds'] || [] }.uniq
+      unless acl_ids.empty?
+        alc_entries = acl_ids.flat_map do |acl_id|
+          attr = exec('slb', 'DescribeAccessControlListAttribute', "--AclId=#{acl_id}", **options)
+          (attr.dig('AclEntrys', 'AclEntry') || []).each_with_index.map do |e, idx|
+            {
+              AclId: (idx.zero? ? attr['AclId'] : ''),
+              AclName: (idx.zero? ? attr['AclName'] : ''),
+              AclEntryIP: e['AclEntryIP'],
+              AclEntryComment: e['AclEntryComment']
+            }
+          end + [nil]
         end
-
+        puts '    Access Control Lists:'
+        puts alc_entries[0..-2].table.to_s.gsub(/^/, '    ')
+        puts
       end
     end
 
