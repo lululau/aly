@@ -4,6 +4,8 @@ module Aly
   class CLI < ::Thor
     class_option :profile, type: :string, optional: true, aliases: ['-p'], desc: 'select profile'
     class_option :detail, type: :boolean, optional: true, default: false, aliases: ['-d'], desc: 'show detail infomation in JSON format'
+    class_option :full, type: :boolean, optional: true, default: false, aliases: ['-f'], desc: 'print tables with more infomation'
+    class_option :acl, type: :boolean, optional: true, default: false, aliases: ['-a'], desc: 'show ACL entries'
 
     desc 'ecs', 'get ECS information'
     def ecs(query = nil)

@@ -10,7 +10,7 @@ class Array
     Terminal::Table.new { |t|
       t << header
       t << :separator
-      each { |row| t << row.values }
+      each { |row| t << (row.nil? ? :separator : row.values) }
     }
   end
 end
@@ -91,6 +91,128 @@ module Aly
       end
     end
 
+    def full_slb(lbs, eips, **options)
+      lbs.each do |lb|
+        puts "\nLoanBalancer Id: %s, Name: %s" % [lb['LoadBalancerId'], lb['LoadBalancerName']]
+        puts "==============================================================\n\n"
+        listeners = lb['Listeners']
+        background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)['BackendServers']['BackendServer'] || []
+
+        puts '    LoadBalancer Basic Information:'
+        puts([{
+                Id: lb['LoadBalancerId'],
+                Name: lb['LoadBalancerName'],
+                Address: lb['Address'],
+                Eip: lb['Eip'],
+                Listeners: listeners.size
+              }].table.to_s.gsub(/^/, '    '))
+        puts
+
+        if background_servers && background_servers.size > 0
+          puts '    Default Backend Servers:'
+          puts
+
+          ecss = @ecs.select { |e| background_servers.map{|ee| ee['ServerId']}.include?(e['InstanceId']) }
+
+          puts ecss.map { |row|
+            {
+              Id: row['InstanceId'],
+              Name: row['InstanceName'],
+              PrivateIP: row['PrivateIP'].join(','),
+              PublicIP: row['PublicIP'].join(','),
+              CPU: row['Cpu'],
+              RAM: "#{row['Memory'] / 1024.0} GB"
+            }
+          }.table.to_s.gsub(/^/, '    ')
+          puts
+        end
+
+        vserver_groups = exec('slb', 'DescribeVServerGroups', '--pager', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)["VServerGroups"]["VServerGroup"] || []
+        vserver_group_servers = vserver_groups.flat_map do |vg|
+          vg_attr = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{vg['VServerGroupId']}", **options)["BackendServers"]["BackendServer"]
+          vg_attr.each_with_index.map do |attr, idx|
+            ecs = @ecs.find {|e| e['InstanceId'] == attr['ServerId'] }
+            {
+              VGroupId: (idx.zero? ? vg['VServerGroupId'] : ''),
+              VGroupName: (idx.zero? ? vg['VServerGroupName'] : ''),
+              Weight: attr['Weight'],
+              Port: attr['Port'],
+              Type: attr['Type'],
+              EcsId: attr['ServerId'],
+              EcsName: ecs['InstanceName'],
+              PrivateIP: ecs['PrivateIP'].join(','),
+              PublicIP: ecs['PublicIP'].join(','),
+              CPU: ecs['Cpu'],
+              RAM: "#{ecs['Memory'] / 1024.0} GB"
+            }
+          end + [nil]
+        end
+        puts '    VServer Groups:'
+        puts vserver_group_servers[0..-2].table.to_s.gsub(/^/, '    ')
+        puts
+
+        listeners.each do |listener|
+          listener_type = ['HTTP', 'HTTPS', 'TCP', 'TCPS', 'UDP'].find { |e| !listener["#{e}ListenerConfig"].empty? }
+          listener['ListenerType'] = listener_type
+        end
+
+        listeners_info = listeners.map do |listener|
+          {
+            Description: listener['Description'],
+            Port: listener['ListenerPort'],
+            Protocol: listener['ListenerProtocol'],
+            Status: listener['Status'],
+            HeathCheck: (listener["#{listener['ListenerType']}ListenerConfig"] || {}).dig("HealthCheck") || 'off',
+            BackendServerPort: listener['BackendServerPort'],
+            ForwardPort: listener.dig('HTTPListenerConfig', 'ForwardPort'),
+            VServerGroup: listener['VServerGroupId'],
+            AclStatus: listener['AclStatus'] || 'off',
+            AclType: listener['AclType'],
+            AclIds: (listener['AclIds'] || []).join(','),
+          }
+        end
+
+        puts '    Configured Listeners:'
+        puts listeners_info.table.to_s.gsub(/^/, '    ')
+        puts
+
+        listener_rules = listeners.flat_map do |listener|
+          listener_type = listener['ListenerType']
+          next [] unless listener_type
+          rules = exec('slb', "DescribeLoadBalancer#{listener_type}ListenerAttribute", "--LoadBalancerId=#{lb['LoadBalancerId']}", "--ListenerPort=#{listener['ListenerPort']}", **options).dig('Rules', 'Rule') || []
+          rules.map do |rule|
+            {'Listener' => listener['Description']}.merge(rule)
+          end
+        end
+
+        puts '    Listener Rules:'
+        puts listener_rules.table.to_s.gsub(/^/, '    ')
+        puts
+
+        if options['acl']
+          acl_ids = listeners.flat_map { |listener| listener['AclIds'] || [] }.uniq
+          unless acl_ids.empty?
+            alc_entries = acl_ids.flat_map do |acl_id|
+              attr = exec('slb', 'DescribeAccessControlListAttribute', "--AclId=#{acl_id}", **options)
+              (attr.dig('AclEntrys', 'AclEntry') || []).each_with_index.map do |e, idx|
+                {
+                  AclId: (idx.zero? ? attr['AclId'] : ''),
+                  AclName: (idx.zero? ? attr['AclName'] : ''),
+                  AclEntryIP: e['AclEntryIP'],
+                  AclEntryComment: e['AclEntryComment']
+                }
+              end + [nil]
+            end
+            puts '    Access Control Lists:'
+            puts alc_entries[0..-2].table.to_s.gsub(/^/, '    ')
+            puts
+          end
+
+        end
+
+      end
+    end
+
     def slb(*args, **options)
       raw_out = exec('slb', 'DescribeLoadBalancers', '--pager', **options)
       selected = raw_out['LoadBalancers']['LoadBalancer'] || []
@@ -115,7 +237,29 @@ module Aly
         end
       end
 
-      if options['detail']
+      @eip ||= exec('vpc', 'DescribeEipAddresses', '--PageSize=100', **options)['EipAddresses']['EipAddress'] || []
+
+      eip_map = @eip.each_with_object({}) { |eip, h| h[eip['InstanceId']] = eip['IpAddress'] }
+      selected.each do |slb|
+        slb['Eip'] = eip_map[slb['LoadBalancerId']]
+      end
+
+      @ecs = exec('ecs', 'DescribeInstances', '--pager', **options)['Instances']['Instance'] || []
+      @ecs.each do |item|
+        item['PrivateIP'] = (item['NetworkInterfaces']['NetworkInterface'] || []).map { |ni| ni['PrimaryIpAddress'] }
+        item['PublicIP'] = []
+        if ip = item['EipAddress']['IpAddress']
+          item['PublicIP'] << ip
+        end
+        if ips = item['PublicIpAddress']['IpAddress']
+          item['PublicIP'] += ips
+        end
+        item['AllIPs'] = item['PrivateIP'] + item['PublicIP']
+      end
+
+      if options['full']
+        full_slb(selected, eips, **options)
+      elsif options['detail']
         selected.each do |row|
           described_load_balancer_attributes = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{row['LoadBalancerId']}", **options)
           row['BackendServers'] = described_load_balancer_attributes['BackendServers']['BackendServer']
@@ -165,80 +309,122 @@ module Aly
       @listeners ||= exec('slb', 'DescribeLoadBalancerListeners', '--pager', 'path=Listeners', **options)['Listeners'] || []
       lb = @slb.find { |e| e['Address'] == host || e['Eip'] == host }
       listeners = @listeners.select { |e| e['LoadBalancerId'] == lb['LoadBalancerId'] }
-      background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)['BackendServers']['BackendServer']
 
-      puts 'LoadBalancers:'
+      puts "\nLoanBalancer Id: %s, Name: %s" % [lb['LoadBalancerId'], lb['LoadBalancerName']]
+      puts "==============================================================\n\n"
+      background_servers = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)['BackendServers']['BackendServer'] || []
+
+      puts '    LoadBalancer Basic Information:'
       puts([{
-        Id: lb['LoadBalancerId'],
-        Name: lb['LoadBalancerName'],
-        Address: lb['Address'],
-        Eip: lb['Eip'],
-        Listeners: listeners.size
-      }].table.to_s)
+              Id: lb['LoadBalancerId'],
+              Name: lb['LoadBalancerName'],
+              Address: lb['Address'],
+              Eip: lb['Eip'],
+              Listeners: listeners.size
+            }].table.to_s.gsub(/^/, '    '))
       puts
 
       if background_servers && background_servers.size > 0
-        puts 'Default Backend Servers:'
-        puts background_servers.table.to_s
+        puts '    Default Backend Servers:'
         puts
+
+        ecss = @ecs.select { |e| background_servers.map{|ee| ee['ServerId']}.include?(e['InstanceId']) }
+
+        puts ecss.map { |row|
+          {
+            Id: row['InstanceId'],
+            Name: row['InstanceName'],
+            PrivateIP: row['PrivateIP'].join(','),
+            PublicIP: row['PublicIP'].join(','),
+            CPU: row['Cpu'],
+            RAM: "#{row['Memory'] / 1024.0} GB"
+          }
+        }.table.to_s.gsub(/^/, '    ')
+        puts
+      end
+
+      vserver_groups = exec('slb', 'DescribeVServerGroups', '--pager', "--LoadBalancerId=#{lb['LoadBalancerId']}", **options)["VServerGroups"]["VServerGroup"] || []
+      vserver_group_servers = vserver_groups.flat_map do |vg|
+        vg_attr = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{vg['VServerGroupId']}", **options)["BackendServers"]["BackendServer"]
+        vg_attr.each_with_index.map do |attr, idx|
+          ecs = @ecs.find {|e| e['InstanceId'] == attr['ServerId'] }
+          {
+            VGroupId: (idx.zero? ? vg['VServerGroupId'] : ''),
+            VGroupName: (idx.zero? ? vg['VServerGroupName'] : ''),
+            Weight: attr['Weight'],
+            Port: attr['Port'],
+            Type: attr['Type'],
+            EcsId: attr['ServerId'],
+            EcsName: ecs['InstanceName'],
+            PrivateIP: ecs['PrivateIP'].join(','),
+            PublicIP: ecs['PublicIP'].join(','),
+            CPU: ecs['Cpu'],
+            RAM: "#{ecs['Memory'] / 1024.0} GB"
+          }
+        end + [nil]
+      end
+      puts '    VServer Groups:'
+      puts vserver_group_servers[0..-2].table.to_s.gsub(/^/, '    ')
+      puts
+
+      listeners.each do |listener|
+        listener_type = ['HTTP', 'HTTPS', 'TCP', 'TCPS', 'UDP'].find { |e| !listener["#{e}ListenerConfig"].empty? }
+        listener['ListenerType'] = listener_type
       end
 
       listeners_info = listeners.map do |listener|
         {
+          Description: listener['Description'],
           Port: listener['ListenerPort'],
           Protocol: listener['ListenerProtocol'],
           Status: listener['Status'],
+          HeathCheck: (listener["#{listener['ListenerType']}ListenerConfig"] || {}).dig("HealthCheck") || 'off',
           BackendServerPort: listener['BackendServerPort'],
           ForwardPort: listener.dig('HTTPListenerConfig', 'ForwardPort'),
-          VServerGroup: listener['VServerGroupId']
+          VServerGroup: listener['VServerGroupId'],
+          AclStatus: listener['AclStatus'] || 'off',
+          AclType: listener['AclType'],
+          AclIds: (listener['AclIds'] || []).join(','),
         }
       end
 
-      puts 'Configured Listeners:'
-      puts listeners_info.table.to_s
+      puts '    Configured Listeners:'
+      puts listeners_info.table.to_s.gsub(/^/, '    ')
       puts
 
-      listeners_info.each do |listener|
-        if listener[:VServerGroup]
-          vserver_group = exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{listener[:VServerGroup]}", **options)["BackendServers"]["BackendServer"]
-          puts "VServerGroup #{listener[:VServerGroup]}:"
-          puts(vserver_group.map { |e|
-            {
-              EcsInstanceId: e['ServerId'],
-              Port: e['Port'],
-              Weight: e['Weight'],
-              Type: e['Type']
-            }
-          }.table.to_s)
-          puts
+      listener_rules = listeners.flat_map do |listener|
+        listener_type = listener['ListenerType']
+        next [] unless listener_type
+        rules = exec('slb', "DescribeLoadBalancer#{listener_type}ListenerAttribute", "--LoadBalancerId=#{lb['LoadBalancerId']}", "--ListenerPort=#{listener['ListenerPort']}", **options).dig('Rules', 'Rule') || []
+        rules.map do |rule|
+          {'Listener' => listener['Description']}.merge(rule)
         end
       end
 
-      ecs_ids = background_servers.map { |e| e['ServerId'] }
-      ecs_ids += listeners_info.flat_map { |e|
-        if e[:VServerGroup]
-          exec('slb', 'DescribeVServerGroupAttribute', "--VServerGroupId=#{e[:VServerGroup]}", **options)["BackendServers"]["BackendServer"].map { |e| e['ServerId'] }
-        else
-          []
+      puts '    Listener Rules:'
+      puts listener_rules.table.to_s.gsub(/^/, '    ')
+      puts
+
+      if options['acl']
+        acl_ids = listeners.flat_map { |listener| listener['AclIds'] || [] }.uniq
+        unless acl_ids.empty?
+          alc_entries = acl_ids.flat_map do |acl_id|
+            attr = exec('slb', 'DescribeAccessControlListAttribute', "--AclId=#{acl_id}", **options)
+            (attr.dig('AclEntrys', 'AclEntry') || []).each_with_index.map do |e, idx|
+              {
+                AclId: (idx.zero? ? attr['AclId'] : ''),
+                AclName: (idx.zero? ? attr['AclName'] : ''),
+                AclEntryIP: e['AclEntryIP'],
+                AclEntryComment: e['AclEntryComment']
+              }
+            end + [nil]
+          end
+          puts '    Access Control Lists:'
+          puts alc_entries[0..-2].table.to_s.gsub(/^/, '    ')
+          puts
         end
-      }
-      ecs_ids.uniq!
 
-      ecss = @ecs.select { |e| ecs_ids.include?(e['InstanceId']) }
-
-      puts "Referenced ECS Instances:"
-
-      puts ecss.map { |row|
-        {
-          Id: row['InstanceId'],
-          Name: row['InstanceName'],
-          PrivateIP: row['PrivateIP'].join(','),
-          PublicIP: row['PublicIP'].join(','),
-          CPU: row['Cpu'],
-          RAM: "#{row['Memory'] / 1024.0} GB"
-        }
-      }.table.to_s
-
+      end
     end
 
     def show_ecs(host)
