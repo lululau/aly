@@ -18,7 +18,7 @@ end
 module Aly
   class App
     def start(options)
-      send(options[:command], *options[:args], **options[:options])
+      send(options[:command], *options[:args], **(options[:options].transform_keys(&:to_sym)))
     end
 
     def ecs(*args, **options)
@@ -35,7 +35,7 @@ module Aly
         end
       end
 
-      if options['full']
+      if options[:full]
         selected = selected.map do |row|
           {
             Id: row['InstanceId'],
@@ -48,7 +48,7 @@ module Aly
           }
         end
         puts selected.table&.to_s
-      elsif options['detail']
+      elsif options[:detail]
         puts JSON.pretty_generate(selected)
       else
         selected = selected.map do |row|
@@ -77,7 +77,7 @@ module Aly
       end
 
 
-      if options['detail']
+      if options[:detail]
         puts JSON.pretty_generate(selected)
       else
         net_intefraces = exec('ecs', 'DescribeNetworkInterfaces', '--pager', **options)['NetworkInterfaceSets']['NetworkInterfaceSet'].each_with_object({}) do |item, result|
@@ -203,7 +203,7 @@ module Aly
         puts listener_rules.table.to_s.gsub(/^/, '    ')
         puts
 
-        if options['acl']
+        if options[:acl]
           acl_ids = listeners.flat_map { |listener| listener['AclIds'] || [] }.uniq
           unless acl_ids.empty?
             alc_entries = acl_ids.flat_map do |acl_id|
@@ -271,9 +271,9 @@ module Aly
         item['AllIPs'] = item['PrivateIP'] + item['PublicIP']
       end
 
-      if options['full']
+      if options[:full]
         full_slb(selected, eips, **options)
-      elsif options['detail']
+      elsif options[:detail]
         selected.each do |row|
           described_load_balancer_attributes = exec('slb', 'DescribeLoadBalancerAttribute', "--LoadBalancerId=#{row['LoadBalancerId']}", **options)
           row['BackendServers'] = described_load_balancer_attributes['BackendServers']['BackendServer']
@@ -500,7 +500,7 @@ module Aly
 
     def exec(command, sub_command, *args, **options)
       command = "aliyun #{command} #{sub_command} #{args.join(' ')}"
-      command += " -p #{options['profile']}" if options['profile']
+      command += " -p #{options[:profile]}" if options[:profile]
       JSON.parse(`#{command}`)
     end
   end
