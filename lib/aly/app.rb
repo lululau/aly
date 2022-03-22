@@ -35,7 +35,20 @@ module Aly
         end
       end
 
-      if options['detail']
+      if options['full']
+        selected = selected.map do |row|
+          {
+            Id: row['InstanceId'],
+            Name: row['InstanceName'],
+            PrivateIP: row['PrivateIP'],
+            PublicIP: row['PublicIP'],
+            CPU: row['Cpu'],
+            RAM: "#{row['Memory'] / 1024.0} GB",
+            WEB: "https://ecs.console.aliyun.com/#/server/#{row['InstanceId']}/monitor?regionId=#{row['RegionId']}"
+          }
+        end
+        puts selected.table&.to_s
+      elsif options['detail']
         puts JSON.pretty_generate(selected)
       else
         selected = selected.map do |row|
@@ -104,7 +117,8 @@ module Aly
                 Name: lb['LoadBalancerName'],
                 Address: lb['Address'],
                 Eip: lb['Eip'],
-                Listeners: listeners.size
+                Listeners: listeners.size,
+                WEB: "https://slb.console.aliyun.com/slb/#{lb['RegionId']}/slbs/#{lb['LoadBalancerId']}/listeners"
               }].table.to_s.gsub(/^/, '    '))
         puts
 
