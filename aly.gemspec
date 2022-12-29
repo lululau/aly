@@ -23,8 +23,8 @@ Gem::Specification.new do |spec|
   spec.executables   = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  spec.add_dependency 'thor', '~> 0.20.0'
-  spec.add_dependency 'terminal-table', '~> 1.8.0'
+  spec.add_dependency 'thor', '~> 1.2.1'
+  spec.add_dependency 'terminal-table', '~> 3.0.2'
 
-  spec.add_development_dependency "pry-byebug", "~> 3.6.0"
+  spec.add_development_dependency "pry-byebug", "~> 3.10.1"
 end
